@@ -1,0 +1,26 @@
+[project]
+name = "bpcl-delivery-sheet-generator"
+version = "2.0.0"
+description = "BPCL delivery sheet generator with cash memo PDF enrichment, safety compliance tracking, and audit reporting."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.6.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
