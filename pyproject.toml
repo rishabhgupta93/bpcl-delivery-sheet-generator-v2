@@ -4,7 +4,12 @@ version = "2.0.0"
 description = "BPCL delivery sheet generator with cash memo PDF enrichment, safety compliance tracking, and audit reporting."
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+
+dependencies = [
+    "pandas>=2.2.0",
+    "reportlab>=4.0.0",
+    "pypdf>=5.0.0",
+]
 
 [project.optional-dependencies]
 dev = [
