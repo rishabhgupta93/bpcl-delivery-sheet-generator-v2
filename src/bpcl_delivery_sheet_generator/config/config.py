@@ -7,6 +7,7 @@ from typing import Literal
 
 GenerationMode = Literal["combined", "split", "both"]
 ColumnAlign = Literal["left", "center", "right"]
+PageOrientation = Literal["portrait", "landscape"]
 
 
 DEFAULT_SOURCE_COLUMN_MAPPING: dict[str, str] = {
@@ -69,7 +70,7 @@ class EnrichmentConfig:
 class PdfColumnConfig:
     key: str
     label: str
-    width: float
+    width_weight: float
     align: ColumnAlign = "left"
     header_bold: bool = False
     value_bold: bool = False
@@ -80,10 +81,9 @@ class PdfColumnConfig:
 @dataclass(frozen=True)
 class PdfLayoutConfig:
     page_size: str = "A4"
-    orientation: str = "landscape"
+    orientation: PageOrientation = "landscape"
     title: str = "Venkateshwar Gas Service - Delivery Handover Sheet"
     show_operator_in_header: bool = True
-    show_operator_column: bool = False
     columns: tuple[PdfColumnConfig, ...] = field(default_factory=tuple)
 
 
@@ -104,19 +104,19 @@ class LoggingConfig:
 
 def default_v2_pdf_columns() -> tuple[PdfColumnConfig, ...]:
     return (
-        PdfColumnConfig("serial_no", "S.No", 24, "center"),
-        PdfColumnConfig("cash_memo_no", "Memo No", 48, "center"),
-        PdfColumnConfig("consumer_number", "Consumer No", 58, "center"),
-        PdfColumnConfig("consumer_name", "Consumer Name", 90),
-        PdfColumnConfig("area", "Area", 70),
-        PdfColumnConfig("booking_date", "Booking", 50, "center"),
-        PdfColumnConfig("cash_memo_date", "Memo Date", 55, "center"),
-        PdfColumnConfig("address", "Address", 150),
-        PdfColumnConfig("mobile_number", "Mobile", 60, "center"),
+        PdfColumnConfig("serial_no", "S.No", 0.7, "center"),
+        PdfColumnConfig("cash_memo_no", "Memo No", 1.2, "center"),
+        PdfColumnConfig("consumer_number", "Consumer No", 1.4, "center"),
+        PdfColumnConfig("consumer_name", "Consumer Name", 2.2),
+        PdfColumnConfig("area", "Area", 1.7),
+        PdfColumnConfig("booking_date", "Booking", 1.2, "center"),
+        PdfColumnConfig("cash_memo_date", "Memo Date", 1.3, "center"),
+        PdfColumnConfig("address", "Address", 4.0),
+        PdfColumnConfig("mobile_number", "Mobile", 1.4, "center"),
         PdfColumnConfig(
             key="mandatory_inspection_due",
             label="MI",
-            width=26,
+            width_weight=0.6,
             align="center",
             header_bold=True,
             value_bold=True,
@@ -125,7 +125,7 @@ def default_v2_pdf_columns() -> tuple[PdfColumnConfig, ...]:
         PdfColumnConfig(
             key="biometric_due",
             label="Bio",
-            width=28,
+            width_weight=0.7,
             align="center",
             header_bold=True,
             value_bold=True,
@@ -134,7 +134,7 @@ def default_v2_pdf_columns() -> tuple[PdfColumnConfig, ...]:
         PdfColumnConfig(
             key="suraksha_tube_due",
             label="Tube",
-            width=34,
+            width_weight=0.8,
             align="center",
             header_bold=True,
             value_bold=True,
@@ -143,14 +143,14 @@ def default_v2_pdf_columns() -> tuple[PdfColumnConfig, ...]:
         PdfColumnConfig(
             key="online_payment",
             label="Online",
-            width=42,
+            width_weight=0.9,
             align="center",
             header_bold=True,
             value_bold=True,
             blank_display_value="-",
         ),
-        PdfColumnConfig("otp", "OTP", 55, "center"),
-        PdfColumnConfig("signature", "Signature", 85, "center"),
+        PdfColumnConfig("otp", "OTP", 1.2, "center"),
+        PdfColumnConfig("signature", "Signature", 2.0, "center"),
     )
 
 
@@ -188,22 +188,35 @@ class PackageConfig:
         )
 
     def validate(self) -> None:
+        self._validate_input()
+        self._validate_output()
+        self._validate_csv()
+        self._validate_generation()
+        self._validate_enrichment()
+        self._validate_pdf()
+        self._validate_audit()
+        self._validate_logging()
+
+    def _validate_input(self) -> None:
         if not self.input.csv_path:
             raise ValueError("input.csv_path is required")
 
+    def _validate_output(self) -> None:
         if not self.output.output_dir:
             raise ValueError("output.output_dir is required")
 
-        if self.generation.mode not in ("combined", "split", "both"):
-            raise ValueError(
-                "generation.mode must be one of: combined, split, both"
-            )
-
+    def _validate_csv(self) -> None:
         if self.csv.skip_rows < 0:
             raise ValueError("csv.skip_rows cannot be negative")
 
+        if not self.csv.encoding:
+            raise ValueError("csv.encoding is required")
+
         if not self.csv.required_columns:
             raise ValueError("csv.required_columns cannot be empty")
+
+        if not self.csv.column_mapping:
+            raise ValueError("csv.column_mapping cannot be empty")
 
         missing_mappings = [
             column
@@ -217,11 +230,36 @@ class PackageConfig:
                 + ", ".join(missing_mappings)
             )
 
+    def _validate_generation(self) -> None:
+        if self.generation.mode not in ("combined", "split", "both"):
+            raise ValueError(
+                "generation.mode must be one of: combined, split, both"
+            )
+
         if not self.generation.group_by:
             raise ValueError("generation.group_by is required")
 
         if not self.generation.sort_by:
             raise ValueError("generation.sort_by cannot be empty")
+
+    def _validate_enrichment(self) -> None:
+        if not self.enrichment.missing_match_value:
+            raise ValueError("enrichment.missing_match_value is required")
+
+        if self.enrichment.enabled and not self.input.cash_memo_zip_path:
+            raise ValueError(
+                "input.cash_memo_zip_path is required when enrichment.enabled is True"
+            )
+
+    def _validate_pdf(self) -> None:
+        if not self.pdf.page_size:
+            raise ValueError("pdf.page_size is required")
+
+        if self.pdf.orientation not in ("portrait", "landscape"):
+            raise ValueError("pdf.orientation must be one of: portrait, landscape")
+
+        if not self.pdf.title:
+            raise ValueError("pdf.title is required")
 
         if not self.pdf.columns:
             raise ValueError("pdf.columns cannot be empty")
@@ -238,30 +276,47 @@ class PackageConfig:
             )
 
         for column in self.pdf.columns:
-            if not column.key:
-                raise ValueError("pdf column key cannot be empty")
+            self._validate_pdf_column(column)
 
-            if not column.label:
-                raise ValueError(f"pdf column '{column.key}' label cannot be empty")
+    @staticmethod
+    def _validate_pdf_column(column: PdfColumnConfig) -> None:
+        if not column.key:
+            raise ValueError("pdf column key cannot be empty")
 
-            if column.width <= 0:
-                raise ValueError(
-                    f"pdf column '{column.key}' must have positive width"
-                )
+        if not column.label:
+            raise ValueError(f"pdf column '{column.key}' label cannot be empty")
 
-            if column.align not in ("left", "center", "right"):
-                raise ValueError(
-                    f"pdf column '{column.key}' align must be one of: "
-                    "left, center, right"
-                )
-
-        if self.pdf.show_operator_column:
+        if column.width_weight <= 0:
             raise ValueError(
-                "pdf.show_operator_column must remain False for V2 layout. "
-                "Operator should be displayed in the header only."
+                f"pdf column '{column.key}' must have positive width_weight"
             )
 
-        if self.enrichment.enabled and not self.input.cash_memo_zip_path:
+        if column.align not in ("left", "center", "right"):
             raise ValueError(
-                "cash_memo_zip_path is required when enrichment.enabled is True"
+                f"pdf column '{column.key}' align must be one of: "
+                "left, center, right"
+            )
+
+    def _validate_audit(self) -> None:
+        if self.audit.enabled and not (
+            self.audit.write_enrichment_audit
+            or self.audit.write_extraction_summary
+        ):
+            raise ValueError(
+                "audit.enabled is True but no audit outputs are enabled"
+            )
+
+        if self.audit.write_enrichment_audit and not self.audit.enrichment_audit_filename:
+            raise ValueError("audit.enrichment_audit_filename is required")
+
+        if self.audit.write_extraction_summary and not self.audit.extraction_summary_filename:
+            raise ValueError("audit.extraction_summary_filename is required")
+
+    def _validate_logging(self) -> None:
+        allowed_log_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+
+        if self.logging.log_level.upper() not in allowed_log_levels:
+            raise ValueError(
+                "logging.log_level must be one of: "
+                + ", ".join(sorted(allowed_log_levels))
             )
