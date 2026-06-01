@@ -82,10 +82,74 @@ class PdfColumnConfig:
 class PdfLayoutConfig:
     page_size: str = "A4"
     orientation: PageOrientation = "landscape"
+
     title: str = "Venkateshwar Gas Service - Delivery Handover Sheet"
     show_operator_in_header: bool = True
-    columns: tuple[PdfColumnConfig, ...] = field(default_factory=tuple)
 
+    # Header / footer
+    footer_note: str = (
+        "Dear Customer. Download your e-invoice using the link "
+        "(irt.bpcl.in) in delivered message within 7 days."
+    )
+    show_footer_note: bool = True
+    printed_datetime_format: str = "%d-%m-%Y %I:%M %p"
+
+    price_10kg_label: str = "10 KG Price"
+    price_10kg: float | None = 684.00
+    price_14_2kg_label: str = "14.2 KG Price"
+    price_14_2kg: float | None = 948.50
+    currency_symbol: str = "Rs. "
+
+    # Page margins
+    left_margin_mm: float = 4
+    right_margin_mm: float = 4
+    top_margin_mm: float = 16
+    bottom_margin_mm: float = 10
+
+    # Header/footer coordinates
+    page_header_y_mm: float = 8
+    footer_y_mm: float = 6
+    header_line_gap_mm: float = 4.2
+    divider_gap_mm: float = 2.5
+
+    # Typography
+    page_header_font_size: float = 11
+    page_meta_font_size: float = 8
+    page_footer_font_size: float = 11
+
+    table_header_font_size: float = 8.6
+    table_header_leading: float = 10.0
+    table_cell_font_size: float = 10.0
+    table_cell_leading: float = 10.8
+
+    section_header_font_size: float = 9
+    section_header_leading: float = 10
+
+    # Table spacing
+    story_top_spacer_mm: float = 2
+    operator_section_spacer_mm: float = 2
+    section_bottom_spacer_mm: float = 5
+
+    row_top_padding: float = 7
+    row_bottom_padding: float = 7
+    cell_left_padding: float = 2.5
+    cell_right_padding: float = 2.5
+
+    # Styling
+    header_background_hex: str = "#EDEDED"
+    grid_color_hex: str = "#777777"
+    footer_text_hex: str = "#555555"
+
+    base_grid_line_width: float = 0.35
+    header_line_width: float = 0.8
+    writable_box_line_width: float = 0.8
+    divider_line_width: float = 0.5
+
+    # Address rendering
+    use_combined_address: bool = True
+    address_separator: str = ", "
+
+    columns: tuple[PdfColumnConfig, ...] = field(default_factory=tuple)
 
 @dataclass(frozen=True)
 class AuditConfig:
@@ -104,15 +168,15 @@ class LoggingConfig:
 
 def default_v2_pdf_columns() -> tuple[PdfColumnConfig, ...]:
     return (
-        PdfColumnConfig("serial_no", "S.No", 0.7, "center"),
-        PdfColumnConfig("cash_memo_no", "Memo No", 1.2, "center"),
+        PdfColumnConfig("serial_no", "S.No", 0.5, "center"),
+        PdfColumnConfig("cash_memo_no", "Memo No", 1.0, "center"),
         PdfColumnConfig("consumer_number", "Consumer No", 1.4, "center"),
         PdfColumnConfig("consumer_name", "Consumer Name", 2.2),
-        PdfColumnConfig("area", "Area", 1.7),
-        PdfColumnConfig("booking_date", "Booking", 1.2, "center"),
-        PdfColumnConfig("cash_memo_date", "Memo Date", 1.3, "center"),
-        PdfColumnConfig("address", "Address", 4.0),
-        PdfColumnConfig("mobile_number", "Mobile", 1.4, "center"),
+        PdfColumnConfig("area", "Area", 1.4),
+        PdfColumnConfig("booking_date", "Booking Date", 1.5, "center"),
+        PdfColumnConfig("cash_memo_date", "Memo Date", 1.5, "center"),
+        PdfColumnConfig("address", "Address", 3.8),
+        PdfColumnConfig("mobile_number", "Mobile", 1.7, "center"),
         PdfColumnConfig(
             key="mandatory_inspection_due",
             label="MI",
@@ -125,7 +189,7 @@ def default_v2_pdf_columns() -> tuple[PdfColumnConfig, ...]:
         PdfColumnConfig(
             key="biometric_due",
             label="Bio",
-            width_weight=0.7,
+            width_weight=0.6,
             align="center",
             header_bold=True,
             value_bold=True,
@@ -134,7 +198,7 @@ def default_v2_pdf_columns() -> tuple[PdfColumnConfig, ...]:
         PdfColumnConfig(
             key="suraksha_tube_due",
             label="Tube",
-            width_weight=0.8,
+            width_weight=0.6,
             align="center",
             header_bold=True,
             value_bold=True,
@@ -143,14 +207,14 @@ def default_v2_pdf_columns() -> tuple[PdfColumnConfig, ...]:
         PdfColumnConfig(
             key="online_payment",
             label="Online",
-            width_weight=0.9,
+            width_weight=0.8,
             align="center",
             header_bold=True,
             value_bold=True,
             blank_display_value="-",
         ),
-        PdfColumnConfig("otp", "OTP", 1.2, "center"),
-        PdfColumnConfig("signature", "Signature", 2.0, "center"),
+        PdfColumnConfig("otp", "OTP", 1.6, "center"),
+        PdfColumnConfig("signature", "Signature", 1.7, "center"),
     )
 
 
