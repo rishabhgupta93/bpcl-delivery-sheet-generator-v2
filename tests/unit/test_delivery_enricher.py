@@ -55,30 +55,49 @@ def test_enrich_matched_consumer_populates_enrichment_fields() -> None:
     records = [_delivery_record()]
     extraction_records = [_extraction_record()]
 
-    enriched = DeliveryEnricher(
+    result = DeliveryEnricher(
         EnrichmentConfig(enabled=True)
     ).enrich(records, extraction_records)
 
-    assert len(enriched) == 1
-    assert enriched[0].mandatory_inspection_due == "Y"
-    assert enriched[0].biometric_due == "N"
-    assert enriched[0].suraksha_tube_due == "Y"
-    assert enriched[0].online_payment == "Y"
+    assert len(result.records) == 1
+    assert result.records[0].mandatory_inspection_due == "Y"
+    assert result.records[0].biometric_due == "N"
+    assert result.records[0].suraksha_tube_due == "Y"
+    assert result.records[0].online_payment == "Y"
+
+    assert len(result.audit_rows) == 1
+    assert result.audit_rows[0]["enrichment_status"] == "MATCHED"
+
+    assert result.summary.total_csv_records == 1
+    assert result.summary.total_extracted_records == 1
+    assert result.summary.matched_records == 1
+    assert result.summary.unmatched_records == 0
+    assert result.warnings == []
 
 
 def test_enrich_missing_consumer_sets_na_values() -> None:
     records = [_delivery_record(consumer_number="11111111")]
     extraction_records = [_extraction_record(consumer_number="96076255")]
 
-    enriched = DeliveryEnricher(
+    result = DeliveryEnricher(
         EnrichmentConfig(enabled=True)
     ).enrich(records, extraction_records)
 
-    assert len(enriched) == 1
-    assert enriched[0].mandatory_inspection_due == "NA"
-    assert enriched[0].biometric_due == "NA"
-    assert enriched[0].suraksha_tube_due == "NA"
-    assert enriched[0].online_payment == "NA"
+    assert len(result.records) == 1
+    assert result.records[0].mandatory_inspection_due == "NA"
+    assert result.records[0].biometric_due == "NA"
+    assert result.records[0].suraksha_tube_due == "NA"
+    assert result.records[0].online_payment == "NA"
+
+    assert result.summary.total_csv_records == 1
+    assert result.summary.total_extracted_records == 1
+    assert result.summary.matched_records == 0
+    assert result.summary.unmatched_records == 1
+
+    statuses = [row["enrichment_status"] for row in result.audit_rows]
+    assert "MISSING_MATCH" in statuses
+    assert "EXTRACTION_ONLY" in statuses
+    assert len(result.warnings) == 2
 
 
 def test_enrich_duplicate_same_values_does_not_fail() -> None:
@@ -88,15 +107,20 @@ def test_enrich_duplicate_same_values_does_not_fail() -> None:
         _extraction_record(),
     ]
 
-    enriched = DeliveryEnricher(
+    result = DeliveryEnricher(
         EnrichmentConfig(enabled=True)
     ).enrich(records, extraction_records)
 
-    assert len(enriched) == 1
-    assert enriched[0].mandatory_inspection_due == "Y"
-    assert enriched[0].biometric_due == "N"
-    assert enriched[0].suraksha_tube_due == "Y"
-    assert enriched[0].online_payment == "Y"
+    assert len(result.records) == 1
+    assert result.records[0].mandatory_inspection_due == "Y"
+    assert result.records[0].biometric_due == "N"
+    assert result.records[0].suraksha_tube_due == "Y"
+    assert result.records[0].online_payment == "Y"
+
+    assert result.summary.matched_records == 1
+    assert result.summary.unmatched_records == 0
+    assert len(result.warnings) == 1
+    assert "Duplicate same-value extraction ignored" in result.warnings[0]
 
 
 def test_enrich_conflicting_values_raises_error() -> None:
@@ -124,21 +148,28 @@ def test_enrich_consumer_number_normalization_handles_decimal_artifact() -> None
     records = [_delivery_record(consumer_number="96076255.0")]
     extraction_records = [_extraction_record(consumer_number="96076255")]
 
-    enriched = DeliveryEnricher(
+    result = DeliveryEnricher(
         EnrichmentConfig(enabled=True)
     ).enrich(records, extraction_records)
 
-    assert len(enriched) == 1
-    assert enriched[0].mandatory_inspection_due == "Y"
-    assert enriched[0].online_payment == "Y"
+    assert len(result.records) == 1
+    assert result.records[0].mandatory_inspection_due == "Y"
+    assert result.records[0].online_payment == "Y"
+    assert result.summary.matched_records == 1
+    assert result.warnings == []
 
 
 def test_enrich_disabled_returns_original_records() -> None:
     records = [_delivery_record()]
     extraction_records = [_extraction_record()]
 
-    enriched = DeliveryEnricher(
+    result = DeliveryEnricher(
         EnrichmentConfig(enabled=False)
     ).enrich(records, extraction_records)
 
-    assert enriched == records
+    assert result.records == records
+    assert result.audit_rows == []
+    assert result.warnings == []
+    assert result.summary.total_csv_records == 1
+    assert result.summary.total_extracted_records == 0
+    assert result.summary.matched_records == 0

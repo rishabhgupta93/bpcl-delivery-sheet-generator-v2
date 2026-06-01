@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from typing import Any
 
 from bpcl_delivery_sheet_generator.config import EnrichmentConfig
 from bpcl_delivery_sheet_generator.models import (
     CashMemoExtractionRecord,
     DeliveryRecord,
     ENRICHMENT_NOT_AVAILABLE,
+    ExtractionSummary,
 )
 
 
@@ -15,10 +17,16 @@ class DeliveryEnricherError(Exception):
     """Raised when delivery enrichment fails."""
 
 
+@dataclass(frozen=True)
+class DeliveryEnrichmentResult:
+    records: list[DeliveryRecord]
+    audit_rows: list[dict[str, Any]]
+    summary: ExtractionSummary
+    warnings: list[str]
+
+
 class DeliveryEnricher:
-    """
-    Enriches DeliveryRecord objects using CashMemoExtractionRecord objects.
-    """
+    """Enriches DeliveryRecord objects using CashMemoExtractionRecord objects."""
 
     _VALID_ENRICHMENT_VALUES = {"Y", "N", "NA"}
 
@@ -34,7 +42,7 @@ class DeliveryEnricher:
         self,
         delivery_records: list[DeliveryRecord],
         extraction_records: list[CashMemoExtractionRecord],
-    ) -> list[DeliveryRecord]:
+    ) -> DeliveryEnrichmentResult:
         self.logger.info(
             "delivery_enrichment_started | delivery_records=%d extraction_records=%d enabled=%s",
             len(delivery_records),
@@ -43,23 +51,25 @@ class DeliveryEnricher:
         )
 
         if not self.enrichment_config.enabled:
-            self.logger.info("delivery_enrichment_skipped | reason=enrichment_disabled")
-            return delivery_records
+            return self._build_disabled_result(delivery_records)
 
         if not delivery_records:
-            self.logger.info("delivery_enrichment_completed | reason=no_delivery_records")
-            return []
+            return self._build_empty_result(extraction_records)
 
         if not extraction_records:
             raise DeliveryEnricherError(
                 "Delivery enrichment is enabled but no cash memo extraction records were provided."
             )
 
-        lookup = self._build_lookup(extraction_records)
+        lookup, duplicate_warnings = self._build_lookup(extraction_records)
 
         enriched_records: list[DeliveryRecord] = []
+        audit_rows: list[dict[str, Any]] = []
+        warnings: list[str] = list(duplicate_warnings)
+
         matched_count = 0
         unmatched_count = 0
+        matched_consumer_keys: set[str] = set()
 
         for record in delivery_records:
             consumer_key = self._normalize_consumer_number(record.consumer_number)
@@ -69,6 +79,13 @@ class DeliveryEnricher:
                 unmatched_count += 1
                 enriched_records.append(self._mark_missing(record))
 
+                warning = (
+                    f"Missing cash memo enrichment for consumer_number="
+                    f"{record.consumer_number}, cash_memo_no={record.cash_memo_no}"
+                )
+                warnings.append(warning)
+                audit_rows.append(self._build_missing_audit_row(record))
+
                 self.logger.warning(
                     "delivery_enrichment_match_missing | consumer_number=%s cash_memo_no=%s",
                     record.consumer_number,
@@ -77,15 +94,21 @@ class DeliveryEnricher:
                 continue
 
             matched_count += 1
-            enriched_records.append(self._apply_extraction(record, extraction))
+            matched_consumer_keys.add(consumer_key)
 
-            self.logger.debug(
-                "delivery_enrichment_match_found | consumer_number=%s cash_memo_no=%s invoice_no=%s order_no=%s",
-                record.consumer_number,
-                record.cash_memo_no,
-                extraction.invoice_no,
-                extraction.order_no,
+            enriched_records.append(self._apply_extraction(record, extraction))
+            audit_rows.append(self._build_matched_audit_row(record, extraction))
+
+        extraction_only_keys = set(lookup.keys()) - matched_consumer_keys
+
+        for extraction_only_key in sorted(extraction_only_keys):
+            extraction = lookup[extraction_only_key]
+            warning = (
+                f"Extraction-only consumer found: consumer_number="
+                f"{extraction.consumer_number}, invoice_no={extraction.invoice_no}"
             )
+            warnings.append(warning)
+            audit_rows.append(self._build_extraction_only_audit_row(extraction))
 
         if unmatched_count and getattr(
             self.enrichment_config, "fail_on_missing_matches", False
@@ -94,25 +117,39 @@ class DeliveryEnricher:
                 f"Missing cash memo enrichment for {unmatched_count} delivery records."
             )
 
+        summary = self._build_summary(
+            delivery_records=delivery_records,
+            extraction_records=extraction_records,
+            matched_records=matched_count,
+            unmatched_records=unmatched_count,
+            conflicting_records=0,
+        )
+
         self.logger.info(
-            "delivery_enrichment_completed | total=%d matched=%d unmatched=%d",
+            "delivery_enrichment_completed | total=%d matched=%d unmatched=%d extraction_only=%d warnings=%d",
             len(delivery_records),
             matched_count,
             unmatched_count,
+            len(extraction_only_keys),
+            len(warnings),
         )
 
-        return enriched_records
+        return DeliveryEnrichmentResult(
+            records=enriched_records,
+            audit_rows=audit_rows,
+            summary=summary,
+            warnings=warnings,
+        )
 
     def _build_lookup(
         self,
         extraction_records: list[CashMemoExtractionRecord],
-    ) -> dict[str, CashMemoExtractionRecord]:
+    ) -> tuple[dict[str, CashMemoExtractionRecord], list[str]]:
         lookup: dict[str, CashMemoExtractionRecord] = {}
-        duplicate_same_values_count = 0
+        warnings: list[str] = []
 
         for extraction in extraction_records:
             self._validate_extraction_record(extraction)
-
             consumer_key = self._normalize_consumer_number(extraction.consumer_number)
 
             if not consumer_key:
@@ -127,7 +164,12 @@ class DeliveryEnricher:
                 continue
 
             if self._same_enrichment_values(existing, extraction):
-                duplicate_same_values_count += 1
+                warning = (
+                    f"Duplicate same-value extraction ignored for consumer_number="
+                    f"{extraction.consumer_number}, invoice_no={extraction.invoice_no}"
+                )
+                warnings.append(warning)
+
                 self.logger.warning(
                     "delivery_enrichment_duplicate_detected | consumer_number=%s invoice_no=%s action=ignored_duplicate_same_values",
                     extraction.consumer_number,
@@ -150,18 +192,15 @@ class DeliveryEnricher:
             if self.enrichment_config.fail_on_conflicts:
                 raise DeliveryEnricherError(message)
 
-            self.logger.warning(
-                "delivery_enrichment_conflict_ignored | consumer_number=%s action=kept_first_record",
-                extraction.consumer_number,
-            )
+            warnings.append(message)
 
         self.logger.info(
-            "delivery_enrichment_lookup_built | unique_consumers=%d duplicate_same_values=%d",
+            "delivery_enrichment_lookup_built | unique_consumers=%d warnings=%d",
             len(lookup),
-            duplicate_same_values_count,
+            len(warnings),
         )
 
-        return lookup
+        return lookup, warnings
 
     def _apply_extraction(
         self,
@@ -185,8 +224,7 @@ class DeliveryEnricher:
 
         if missing_value not in self._VALID_ENRICHMENT_VALUES:
             raise DeliveryEnricherError(
-                f"Invalid missing_match_value={missing_value}. "
-                "Allowed values are Y, N, NA."
+                f"Invalid missing_match_value={missing_value}. Allowed values are Y, N, NA."
             )
 
         return replace(
@@ -195,6 +233,135 @@ class DeliveryEnricher:
             biometric_due=missing_value,
             suraksha_tube_due=missing_value,
             online_payment=missing_value,
+        )
+
+    def _build_matched_audit_row(
+        self,
+        record: DeliveryRecord,
+        extraction: CashMemoExtractionRecord,
+    ) -> dict[str, Any]:
+        return {
+            "consumer_number": record.consumer_number,
+            "cash_memo_no": record.cash_memo_no,
+            "invoice_no": extraction.invoice_no,
+            "order_no": extraction.order_no,
+            "mandatory_inspection_due": extraction.mandatory_inspection_due,
+            "biometric_due": extraction.biometric_due,
+            "suraksha_tube_due": extraction.suraksha_tube_due,
+            "online_payment": extraction.online_payment,
+            "source_pdf": extraction.source_pdf,
+            "source_page": extraction.source_page,
+            "enrichment_status": "MATCHED",
+            "remarks": "",
+        }
+
+    def _build_missing_audit_row(self, record: DeliveryRecord) -> dict[str, Any]:
+        return {
+            "consumer_number": record.consumer_number,
+            "cash_memo_no": record.cash_memo_no,
+            "invoice_no": "",
+            "order_no": "",
+            "mandatory_inspection_due": ENRICHMENT_NOT_AVAILABLE,
+            "biometric_due": ENRICHMENT_NOT_AVAILABLE,
+            "suraksha_tube_due": ENRICHMENT_NOT_AVAILABLE,
+            "online_payment": ENRICHMENT_NOT_AVAILABLE,
+            "source_pdf": "",
+            "source_page": "",
+            "enrichment_status": "MISSING_MATCH",
+            "remarks": "No matching cash memo extraction record found.",
+        }
+
+    def _build_extraction_only_audit_row(
+        self,
+        extraction: CashMemoExtractionRecord,
+    ) -> dict[str, Any]:
+        return {
+            "consumer_number": extraction.consumer_number,
+            "cash_memo_no": "",
+            "invoice_no": extraction.invoice_no,
+            "order_no": extraction.order_no,
+            "mandatory_inspection_due": extraction.mandatory_inspection_due,
+            "biometric_due": extraction.biometric_due,
+            "suraksha_tube_due": extraction.suraksha_tube_due,
+            "online_payment": extraction.online_payment,
+            "source_pdf": extraction.source_pdf,
+            "source_page": extraction.source_page,
+            "enrichment_status": "EXTRACTION_ONLY",
+            "remarks": "Cash memo record was extracted but not found in CSV delivery records.",
+        }
+
+    def _build_summary(
+        self,
+        delivery_records: list[DeliveryRecord],
+        extraction_records: list[CashMemoExtractionRecord],
+        matched_records: int,
+        unmatched_records: int,
+        conflicting_records: int,
+    ) -> ExtractionSummary:
+        return ExtractionSummary(
+            total_csv_records=len(delivery_records),
+            total_extracted_records=len(extraction_records),
+            matched_records=matched_records,
+            unmatched_records=unmatched_records,
+            conflicting_records=conflicting_records,
+            mandatory_inspection_due_count=sum(
+                1 for record in extraction_records if record.mandatory_inspection_due == "Y"
+            ),
+            biometric_due_count=sum(
+                1 for record in extraction_records if record.biometric_due == "Y"
+            ),
+            suraksha_tube_due_count=sum(
+                1 for record in extraction_records if record.suraksha_tube_due == "Y"
+            ),
+            online_payment_count=sum(
+                1 for record in extraction_records if record.online_payment == "Y"
+            ),
+        )
+
+    def _build_disabled_result(
+        self,
+        delivery_records: list[DeliveryRecord],
+    ) -> DeliveryEnrichmentResult:
+        summary = ExtractionSummary(
+            total_csv_records=len(delivery_records),
+            total_extracted_records=0,
+            matched_records=0,
+            unmatched_records=0,
+            conflicting_records=0,
+            mandatory_inspection_due_count=0,
+            biometric_due_count=0,
+            suraksha_tube_due_count=0,
+            online_payment_count=0,
+        )
+
+        return DeliveryEnrichmentResult(
+            records=delivery_records,
+            audit_rows=[],
+            summary=summary,
+            warnings=[],
+        )
+
+    def _build_empty_result(
+        self,
+        extraction_records: list[CashMemoExtractionRecord],
+    ) -> DeliveryEnrichmentResult:
+        summary = ExtractionSummary(
+            total_csv_records=0,
+            total_extracted_records=len(extraction_records),
+            matched_records=0,
+            unmatched_records=0,
+            conflicting_records=0,
+            mandatory_inspection_due_count=0,
+            biometric_due_count=0,
+            suraksha_tube_due_count=0,
+            online_payment_count=0,
+        )
+
+        return DeliveryEnrichmentResult(
+            records=[],
+            audit_rows=[],
+            summary=summary,
+            warnings=[],
         )
 
     def _validate_extraction_record(
