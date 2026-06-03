@@ -149,7 +149,12 @@ class CashMemoPDFExtractor:
         )
 
         due_match = re.search(
-            r"DUE\s*:\s*Mand\s+Insp-([YN])\s*,\s*Bio-([YN])\s*,\s*SurTube-([YN])",
+            (
+                r"DUE\s*:\s*"
+                r"Mand\s+Insp-(Y|N|NA)\s*,\s*"
+                r"Bio-(Y|N|NA)\s*,\s*"
+                r"SurTube-(Y|N|NA)"
+            ),
             block,
             flags=re.IGNORECASE,
         )

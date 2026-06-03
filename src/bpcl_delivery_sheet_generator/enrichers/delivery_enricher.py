@@ -69,19 +69,20 @@ class DeliveryEnricher:
 
         matched_count = 0
         unmatched_count = 0
-        matched_consumer_keys: set[str] = set()
+        matched_keys: set[tuple[str, str]] = set()
 
         for record in delivery_records:
-            consumer_key = self._normalize_consumer_number(record.consumer_number)
-            extraction = lookup.get(consumer_key)
+            delivery_key = self._delivery_lookup_key(record)
+            extraction = lookup.get(delivery_key)
 
             if extraction is None:
                 unmatched_count += 1
                 enriched_records.append(self._mark_missing(record))
 
                 warning = (
-                    f"Missing cash memo enrichment for consumer_number="
-                    f"{record.consumer_number}, cash_memo_no={record.cash_memo_no}"
+                    "Missing PDF invoice for "
+                    f"consumer_number={record.consumer_number}, "
+                    f"cash_memo_no={record.cash_memo_no}"
                 )
                 warnings.append(warning)
                 audit_rows.append(self._build_missing_audit_row(record))
@@ -94,18 +95,19 @@ class DeliveryEnricher:
                 continue
 
             matched_count += 1
-            matched_consumer_keys.add(consumer_key)
+            matched_keys.add(delivery_key)
 
             enriched_records.append(self._apply_extraction(record, extraction))
             audit_rows.append(self._build_matched_audit_row(record, extraction))
 
-        extraction_only_keys = set(lookup.keys()) - matched_consumer_keys
+        extraction_only_keys = set(lookup.keys()) - matched_keys
 
         for extraction_only_key in sorted(extraction_only_keys):
             extraction = lookup[extraction_only_key]
             warning = (
-                f"Extraction-only consumer found: consumer_number="
-                f"{extraction.consumer_number}, invoice_no={extraction.invoice_no}"
+                "Extraction-only PDF invoice found: "
+                f"consumer_number={extraction.consumer_number}, "
+                f"invoice_no={extraction.invoice_no}"
             )
             warnings.append(warning)
             audit_rows.append(self._build_extraction_only_audit_row(extraction))
@@ -114,7 +116,7 @@ class DeliveryEnricher:
             self.enrichment_config, "fail_on_missing_matches", False
         ):
             raise DeliveryEnricherError(
-                f"Missing cash memo enrichment for {unmatched_count} delivery records."
+                f"Missing PDF invoice for {unmatched_count} delivery records."
             )
 
         summary = self._build_summary(
@@ -144,29 +146,37 @@ class DeliveryEnricher:
     def _build_lookup(
         self,
         extraction_records: list[CashMemoExtractionRecord],
-    ) -> tuple[dict[str, CashMemoExtractionRecord], list[str]]:
-        lookup: dict[str, CashMemoExtractionRecord] = {}
+    ) -> tuple[dict[tuple[str, str], CashMemoExtractionRecord], list[str]]:
+        lookup: dict[tuple[str, str], CashMemoExtractionRecord] = {}
         warnings: list[str] = []
 
         for extraction in extraction_records:
             self._validate_extraction_record(extraction)
-            consumer_key = self._normalize_consumer_number(extraction.consumer_number)
+            extraction_key = self._extraction_lookup_key(extraction)
+
+            consumer_key, invoice_key = extraction_key
 
             if not consumer_key:
                 raise DeliveryEnricherError(
                     f"Cash memo extraction record has empty consumer number: {extraction}"
                 )
 
-            existing = lookup.get(consumer_key)
+            if not invoice_key:
+                raise DeliveryEnricherError(
+                    f"Cash memo extraction record has empty invoice number: {extraction}"
+                )
+
+            existing = lookup.get(extraction_key)
 
             if existing is None:
-                lookup[consumer_key] = extraction
+                lookup[extraction_key] = extraction
                 continue
 
             if self._same_enrichment_values(existing, extraction):
                 warning = (
-                    f"Duplicate same-value extraction ignored for consumer_number="
-                    f"{extraction.consumer_number}, invoice_no={extraction.invoice_no}"
+                    "Duplicate same-value extraction ignored for "
+                    f"consumer_number={extraction.consumer_number}, "
+                    f"invoice_no={extraction.invoice_no}"
                 )
                 warnings.append(warning)
 
@@ -179,12 +189,14 @@ class DeliveryEnricher:
 
             message = (
                 "Conflicting cash memo extraction records detected for "
-                f"consumer_number={extraction.consumer_number}"
+                f"consumer_number={extraction.consumer_number}, "
+                f"invoice_no={extraction.invoice_no}"
             )
 
             self.logger.error(
-                "delivery_enrichment_conflict_detected | consumer_number=%s existing=%s incoming=%s",
+                "delivery_enrichment_conflict_detected | consumer_number=%s invoice_no=%s existing=%s incoming=%s",
                 extraction.consumer_number,
+                extraction.invoice_no,
                 existing,
                 extraction,
             )
@@ -195,7 +207,7 @@ class DeliveryEnricher:
             warnings.append(message)
 
         self.logger.info(
-            "delivery_enrichment_lookup_built | unique_consumers=%d warnings=%d",
+            "delivery_enrichment_lookup_built | unique_consumer_invoice_pairs=%d warnings=%d",
             len(lookup),
             len(warnings),
         )
@@ -267,8 +279,12 @@ class DeliveryEnricher:
             "online_payment": ENRICHMENT_NOT_AVAILABLE,
             "source_pdf": "",
             "source_page": "",
-            "enrichment_status": "MISSING_MATCH",
-            "remarks": "No matching cash memo extraction record found.",
+            "enrichment_status": "MISSING_PDF_INVOICE",
+            "remarks": (
+                "No PDF invoice found for "
+                f"ConsumerNumber={record.consumer_number}, "
+                f"CashMemoNo={record.cash_memo_no}."
+            ),
         }
 
     def _build_extraction_only_audit_row(
@@ -287,7 +303,10 @@ class DeliveryEnricher:
             "source_pdf": extraction.source_pdf,
             "source_page": extraction.source_page,
             "enrichment_status": "EXTRACTION_ONLY",
-            "remarks": "Cash memo record was extracted but not found in CSV delivery records.",
+            "remarks": (
+                "PDF invoice was extracted but no CSV row matched "
+                "the same consumer number and invoice number."
+            ),
         }
 
     def _build_summary(
@@ -383,23 +402,44 @@ class DeliveryEnricher:
 
         if invalid_values:
             raise DeliveryEnricherError(
-                f"Invalid enrichment values detected for consumer_number={extraction.consumer_number}: "
-                f"{invalid_values}"
+                f"Invalid enrichment values detected for consumer_number={extraction.consumer_number}, "
+                f"invoice_no={extraction.invoice_no}: {invalid_values}"
             )
 
     def _same_enrichment_values(
-        self,
-        left: CashMemoExtractionRecord,
-        right: CashMemoExtractionRecord,
+            self,
+            left: CashMemoExtractionRecord,
+            right: CashMemoExtractionRecord,
     ) -> bool:
         return (
-            left.mandatory_inspection_due == right.mandatory_inspection_due
-            and left.biometric_due == right.biometric_due
-            and left.suraksha_tube_due == right.suraksha_tube_due
-            and left.online_payment == right.online_payment
+                left.mandatory_inspection_due == right.mandatory_inspection_due
+                and left.biometric_due == right.biometric_due
+                and left.suraksha_tube_due == right.suraksha_tube_due
+                and left.online_payment == right.online_payment
+        )
+
+    def _delivery_lookup_key(self, record: DeliveryRecord) -> tuple[str, str]:
+        return (
+            self._normalize_consumer_number(record.consumer_number),
+            self._normalize_invoice_number(record.cash_memo_no),
+        )
+
+    def _extraction_lookup_key(
+        self,
+        extraction: CashMemoExtractionRecord,
+    ) -> tuple[str, str]:
+        return (
+            self._normalize_consumer_number(extraction.consumer_number),
+            self._normalize_invoice_number(extraction.invoice_no),
         )
 
     def _normalize_consumer_number(self, value: object) -> str:
+        return self._normalize_identifier(value)
+
+    def _normalize_invoice_number(self, value: object) -> str:
+        return self._normalize_identifier(value)
+
+    def _normalize_identifier(self, value: object) -> str:
         if value is None:
             return ""
 

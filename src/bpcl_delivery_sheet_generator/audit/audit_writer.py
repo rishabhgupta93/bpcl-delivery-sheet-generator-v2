@@ -87,6 +87,7 @@ class AuditWriter:
             return
 
         fieldnames = list(rows[0].keys())
+        self._validate_consistent_schema(rows, fieldnames)
 
         try:
             with output_path.open("w", newline="", encoding="utf-8") as file:
@@ -97,3 +98,22 @@ class AuditWriter:
             raise AuditWriterError(
                 f"Failed to write audit file: {output_path}"
             ) from exc
+
+    def _validate_consistent_schema(
+        self,
+        rows: list[dict[str, Any]],
+        fieldnames: list[str],
+    ) -> None:
+        expected_fields = set(fieldnames)
+
+        for index, row in enumerate(rows, start=1):
+            actual_fields = set(row.keys())
+
+            if actual_fields != expected_fields:
+                missing_fields = sorted(expected_fields - actual_fields)
+                extra_fields = sorted(actual_fields - expected_fields)
+
+                raise AuditWriterError(
+                    "Inconsistent audit row schema detected at row "
+                    f"{index}. Missing fields={missing_fields}, extra fields={extra_fields}"
+                )
