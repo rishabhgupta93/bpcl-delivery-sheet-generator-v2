@@ -226,16 +226,19 @@ class CashMemoPDFExtractor:
             flags=re.IGNORECASE,
         )
 
-        net_match = re.search(
-            r"NET\s*=\s*Rs\.\s*([0-9]+(?:\.[0-9]{1,2})?)",
-            block,
-            flags=re.IGNORECASE | re.DOTALL,
-        )
+        # net_match = re.search(
+        #     r"NET\s*=\s*Rs\.\s*([0-9]+(?:\.[0-9]{1,2})?)",
+        #     block,
+        #     flags=re.IGNORECASE | re.DOTALL,
+        # )
 
-        if not has_advance_payment or not net_match:
+        # if not has_advance_payment or not net_match:
+        if not has_advance_payment:
             return "N"
+        else:
+            return "Y"
 
-        return "Y" if float(net_match.group(1)) == 0.0 else "N"
+        # return "Y" if float(net_match.group(1)) == 0.0 else "N"
 
     def _extract_field(self, pattern: str, text: str, field_name: str) -> str:
         match = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
